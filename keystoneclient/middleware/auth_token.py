@@ -894,6 +894,44 @@ class AuthProtocol(object):
                 'Unable to parse expiration time from token: %s', data)
             raise ServiceError('invalid json response')
 
+ def _request_catalog(self):
+        """Retrieve catalog as admin user from keystone.
+
+        :return service catalog upon success
+        :raises ServerError when unable to communicate with keystone
+
+        Irrespective of the auth version we are going to use for the
+        user token, for simplicity we always use a v2 admin token to
+        validate the user token.
+
+        """
+        params = {
+            'auth': {
+                'passwordCredentials': {
+                    'username': self.admin_user,
+                    'password': self.admin_password,
+                },
+                'tenantName': self.admin_tenant_name,
+            }
+        }
+
+        response, data = self._json_request('POST',
+                                            '/v2.0/tokens',
+                                            body=params)
+
+        try:
+            catalog = data['access']['serviceCatalog']
+            return catalog
+        except (AssertionError, KeyError):
+            self.LOG.warn(
+                "Unexpected response from keystone service: %s", data)
+            raise ServiceError('invalid json response')
+        except (ValueError):
+            data['access']['token']['id'] = '<SANITIZED>'
+            self.LOG.warn(
+                "Unable to parse expiration time from token: %s", data)
+            raise ServiceError('invalid json response')
+
     def _validate_user_token(self, user_token, env, retry=True):
         """Authenticate user token
 
@@ -1020,10 +1058,14 @@ class AuthProtocol(object):
                        ' and roles: %s ',
                        auth_ref.user_id, auth_ref.project_id, roles)
 
-        if self.include_service_catalog and auth_ref.has_service_catalog():
-            catalog = auth_ref.service_catalog.get_data()
-            if _token_is_v3(token_info):
-                catalog = _v3_to_v2_catalog(catalog)
+        if self.include_service_catalog:
+            if auth_ref.has_service_catalog():
+                catalog = auth_ref.service_catalog.get_data()
+                if _token_is_v3(token_info):
+                    catalog = _v3_to_v2_catalog(catalog)
+            else:
+                catalog = self._request_catalog()
+
             rval['X-Service-Catalog'] = jsonutils.dumps(catalog)
 
         return rval
